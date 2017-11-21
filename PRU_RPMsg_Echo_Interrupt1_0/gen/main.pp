@@ -1,0 +1,15 @@
+gen/main.object: main.c
+gen/main.object: /home/ezio/ti-processor-sdk-linux-am57xx-evm-02.00.02.11/linux-devkit/sysroots/x86_64-arago-linux/usr/share/ti/cgt-pru/include/stdint.h
+gen/main.object: /home/ezio/ti-processor-sdk-linux-am57xx-evm-02.00.02.11/linux-devkit/sysroots/x86_64-arago-linux/usr/share/ti/cgt-pru/include/stdio.h
+gen/main.object: /home/ezio/ti-processor-sdk-linux-am57xx-evm-02.00.02.11/linux-devkit/sysroots/x86_64-arago-linux/usr/share/ti/cgt-pru/include/linkage.h
+gen/main.object: /home/ezio/ti-processor-sdk-linux-am57xx-evm-02.00.02.11/linux-devkit/sysroots/x86_64-arago-linux/usr/share/ti/cgt-pru/include/stdarg.h
+gen/main.object: ../../../include/am572x_2_0/pru_cfg.h
+gen/main.object: ../../../include/am572x_2_0/pru_intc.h
+gen/main.object: ../../../include/rsc_types.h
+gen/main.object: ../../../include/pru_types.h
+gen/main.object: ../../../include/pru_rpmsg.h
+gen/main.object: ../../../include/pru_virtqueue.h
+gen/main.object: ../../../include/pru_virtio_ring.h
+gen/main.object: resource_table_0.h
+gen/main.object: /home/ezio/ti-processor-sdk-linux-am57xx-evm-02.00.02.11/linux-devkit/sysroots/x86_64-arago-linux/usr/share/ti/cgt-pru/include/stddef.h
+gen/main.object: ../../../include/pru_virtio_ids.h
