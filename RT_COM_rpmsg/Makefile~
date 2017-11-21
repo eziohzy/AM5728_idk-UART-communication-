@@ -1,0 +1,15 @@
+RT=RT_COM_rpmsg
+SRC =   $(wildcard ./rpmsg_pru_user_space_echo.c) $(wildcard ./src/*.c) $(wildcard ./src/*.cpp)
+INC_H_RT = $(wildcard ./include/*.h)
+INC_PATH_RT = -I ./include/   -I/usr/local/include/
+CC = g++ -g
+CFLAGS_RT = -std=c++0x -Wl,-rpath /usr/local/lib
+CLIB_RT = -lrt -lpthread 
+
+all: $(RT)
+
+$(RT) : $(SRC) $(INC_H_RT)
+	$(CC)  $(SRC)  $(INC_PATH_RT)  -o $(RT)  $(CFLAGS_RT) $(CLIB_RT)
+
+clean:
+	rm -f *.o ; rm $(RT)

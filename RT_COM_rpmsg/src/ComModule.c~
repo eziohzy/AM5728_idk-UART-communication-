@@ -1,0 +1,386 @@
+/*!
+	This module is an extension of USBCom module for providing 
+	more robust and realtime read/write process. 
+
+	This module includes data checking and error handling method 
+	for the commucication link.
+
+	please see: DataPackStruct.c USBCom.c for more detail.
+
+	Company: PI Electronic (H.K.) Ltd
+	Author : Terence
+	Date: 13 Jan 2015
+*/
+
+#include "ComModule.h"
+
+//! print out the unsigned char array
+/*!
+	input: 
+		buf: buffer array
+		bufSize: buffer size
+*/
+void dispuchar(unsigned char *buf, int bufSize){
+	for (int i=0; i<bufSize; i++){
+		printf("[%d]:%d   ", i, buf[i]);
+	}
+	printf("\n");
+}
+
+//! print out the float array
+/*!
+	input: 
+		buf: buffer array
+		bufSize: buffer size
+*/
+void dispfloat(float *data, int dof){
+	for (int i = 0; i < dof; ++i)
+	{
+		printf("%f ", data[i]);
+	}
+	printf("\n");
+}
+
+
+/*!
+	Reset the array content to 0
+*/
+void reset_char_arr(unsigned char *arr, int size){
+	for (int i=0; i<size; i++){
+		arr[i]=0;
+	}
+}
+
+void reset_float_arr(float *arr, int size){
+	for (int i=0; i<size; i++){
+		arr[i]=0.0;
+	}
+}
+
+//! Initiallize the USB port and all the signal flags
+/*!
+	input: 
+		device: port name.
+		buadrate: buadrate of transmission
+		fsignal: signal flags
+*/
+int ComInitialization( const char *device,int buadrate, struct CM_FLAGS *fsignal)
+{
+
+	int ft;	//!< File device handler
+	static int ct = 0;  //for locating process start
+
+	
+	ft = openUSBserial(device);	//!< turn on USB port
+
+	
+	setBAUDRATE(ft, buadrate); 	//!< set the read and write speed
+
+	/*! 
+		Enable RTS/CTS flow control 
+	*/
+	// fcRTSCTS(ft, 1); //!< 1 enable , 0 disable
+
+
+	// setRTS(ft,1); //! Activate RTS 	
+
+
+	clearUSBbuf(ft,0);	//! Clear residue data in side the read and wirte Buffer of USB chip
+
+
+
+	// ! Initialize all the control flags
+	fsignal->dcflag=0;		//!< data corruption flag
+	fsignal->errflag=0;		//!< error occurrence flag
+	fsignal->errcount=0;	//!< error counter
+	fsignal->ts_cur=0;		//!< current time stamp
+	//fsignal->ts_pre=0;		//!< previous time stamp for sucessful read data
+	fsignal->ts_dif=1;		//!< consecutive data time difference
+	fsignal->toflag=0;		//!< timeout flag
+	fsignal->lbcount=0;		//!< line break counter
+	//fsignal->loopcount=0; 	//!< loop counter
+	fsignal->rscount=0;		//!< resume counter
+	fsignal->txerrcount=0;
+
+	if(ct == 0){
+		fsignal->ts_pre = 0;        // first assignment and not assian again when reconnect
+		fsignal->loopcount = 0;		
+	}
+	ct++;
+	return ft;	//!< return file device handler
+
+}
+
+//! Recieving Module
+/*!
+	input:
+		ft: FTDI device handler
+		RxSize: Size of Rx data, must be 64 bytes
+	output:
+		Rxbuf: unsigned char from DSP
+	in&out:
+		fsignal: signal flags
+	return:
+		status of read process,
+		please see enum ERR_MSG in ComModule.h 
+*/
+ERR_MSG ComRead(unsigned char *Rxbuf, int ft, int RxSize, struct CM_FLAGS *fsignal)
+{
+	int ByteRead =0;	//!< actual received bytes
+
+	reset_char_arr(Rxbuf, RxSize);	//!< set the Rxbuf to 0
+
+
+	ByteRead = USBRead(ft, Rxbuf, RxSize);	//!< Read the data from DSP ,Rxbuf is content of data,byteread is the size of data.
+
+	clock_gettime(CLOCK_MONOTONIC, &t_loc);
+	t_loc.tv_nsec+=1800000; 
+	tsnorm(&t_loc);  //t_loc is for time location to ensure every read and write loop have a fix time
+
+
+	//if the device can't be read
+	if(ByteRead == 0xffffffff){
+
+		fprintf(stderr,"%c[ComRead] FTDI device disconnects at %d! errcount = %d.\n", getlocaltime(),fsignal->loopcount, fsignal->errcount);
+		fsignal->errcount = 0; 
+		fsignal->txerrcount = 0;
+		fsignal->loopcount++; 	//!< increase loop counter
+		return DEV_DISCON;
+	}
+
+	//! Check if continous error Added on 20151028
+	if (fsignal->errcount >4 ){
+		fsignal->lbcount++;	//!< increase link broken counter
+		fsignal->loopcount++;
+		fprintf(stderr, "%c[ComRead] Warning: Link broken for %d times , continuous error = %d\n",getlocaltime(),fsignal->lbcount, fsignal->errcount);
+		fsignal->errcount = 0;
+		fsignal->txerrcount = 0;
+		return LINE_BROKEN;
+	}
+
+	//! Check if time out
+	if(ByteRead != RxSize){
+			
+		fsignal->toflag =1;	//!< set timeout flag to 1
+		fsignal->errcount++;	//!< increase error counter
+		fprintf(stderr,"%c[ComRead] Timeout at no. %d!, errcount = %d.\n",getlocaltime(),fsignal->loopcount, fsignal->errcount);
+		reset_char_arr(Rxbuf, RxSize);	//!< reset the Rx buffer
+		fsignal->loopcount++; 	//!< increase loop counter
+		clearUSBbuf(ft,1);
+		return RX_TIMEOUT;	//!< resturn Timeout msg
+	
+	}
+	//! End of checking timeout
+
+	fsignal->dcflag = check_Rx_data(Rxbuf);	//!< check the Rx data content 
+
+	//! If the data is OK 
+	if (fsignal->dcflag == 0){
+
+		uchar2uint(&fsignal->ts_cur,Rxbuf+57,4);//get the timestampe to fsignal->ts_cur
+		
+		if(fsignal->ts_pre == 4095999981) //if the ts_pre is 4095999981  ts_cur will overfill and set to 5121,so the ts_pre will be set to 5101 for correctness. 
+			fsignal->ts_pre = 5101;
+
+		fsignal->ts_lcur = (fsignal->ts_cur/20)%256 ; // ts_lcur will transmit to DSP for feedback
+		
+		//! check time stamp
+
+		fsignal->ts_dif = (fsignal->ts_cur - fsignal->ts_pre)/20; //!< calculate the time stamp different
+
+		//! check if line is broken 
+		/*!
+			If the time stamp different is greater than 6,or the error 
+			counter is greater than 4. it means the communication miss 
+			5 cycles of data, which means the communication link is corrupted.
+		*/
+		if (fsignal->ts_dif > 6 && fsignal->ts_pre != 0){ //if ts_dif > 6 in firstly read ,omit the error
+			fsignal->lbcount++;	//!< increase link broken counter
+			fsignal->loopcount++;
+			fprintf(stderr,"%cprevious timestamps is %u,current timestamps is %u..\n",getlocaltime(),fsignal->ts_pre,fsignal->ts_cur );
+			fprintf(stderr,"%c[ComRead] Warning: Link broken for %u times , cycle missed = %u\n",getlocaltime(),fsignal->lbcount, fsignal->ts_dif-1);
+			fsignal->errcount = 0;
+			fsignal->txerrcount = 0;
+			fsignal->ts_pre = fsignal->ts_cur;
+			return LINE_BROKEN;
+			}
+
+
+		//! Throw the consecutive cycle after timeout
+		/*!
+			if the read process times out, sometimes the FTDI residue buffer
+			can not be cleared by clearUSBbuf but read in the Rxbuf at the
+			next sucessful read cycle.
+			if read prcoess times out between two conseccutive sucessful read 
+			cycle. Throw away the data and skip Tx after the timeout 
+			can prevent data missmatch.  
+		*/
+		if (fsignal->toflag !=0 && fsignal->ts_dif ==1){
+			
+			fsignal->errcount++;	//!< increase error counter
+			fsignal->toflag = 0;	//!< reset time out flag to 0
+			printf("%cskip consecutive cycle after timeout at time stamp %d. errcount = %d\n",getlocaltime(), fsignal->ts_cur, fsignal->errcount);			
+			reset_char_arr(Rxbuf, RxSize);	//!< reset the Rx buffer
+			fsignal->loopcount++;	//!< increase loop counter
+			clearUSBbuf(ft,1);
+			return TX_SKIP; 	//!< resturn skip Tx msg
+
+		}
+
+		
+		/*! 
+			if error occur at the first time, skip writing
+		*/
+		// if (fsignal->errflag !=0 && fsignal->ts_dif == 1){
+		// 	fsignal->errcount++;	//!< increase error counter
+		// 	fsignal->loopcount++;	//!< increase loop counter
+		// 	printf("control byte from DSP is %d\n",ctlbyte );
+		// 	return TX_SKIP;	//!< return skip Tx msg
+		// }
+
+		
+		return RX_OK;	//!< return OK if no error
+	}
+
+	//! skip writing and clear buffer if data is corrupted
+	else{
+
+		fsignal->errcount++;	//!< increase error counter
+		fprintf(stderr,"%cData Corruption at no. %d!, errcount = %d.\n",getlocaltime(), fsignal->loopcount, fsignal->errcount);
+		reset_char_arr(Rxbuf, RxSize); //!< reset Rx buffer
+		fsignal->loopcount++;	//!< increase loop counter
+		return DATA_CORUP;	//!< return data corrupted msg
+
+	}
+	
+}
+
+
+//! Transmission Module 
+/*!
+	input:
+		ft: FTDI device handler
+		TxSize: Size of Rx data, must be 160 bytes
+		Txbuf: unsigned char dat sent to DSP
+	in&out:
+		fsignal: signal flags
+	return:
+		status of write process,
+		please see enum ERR_MSG in ComModule.h 
+*/
+ERR_MSG ComWrite(int ft, unsigned char *Txbuf, int TxSize, struct CM_FLAGS *fsignal){
+	
+	struct timespec t_rts;	//!< time to keep RTS# high
+
+	DWORD ByteWritten = 0;
+	//! if error occur in the last transmission, print resume msg
+	if (fsignal->ts_dif>1 || fsignal->errcount>0){
+		if(fsignal->ts_pre == 0)
+			fprintf(stderr, "%cRT_Com_Module start to transmit\n",getlocaltime() ); //not printf if firstly read
+		else{
+		fsignal->rscount++;	//!<  increase resume counter 
+		fprintf(stderr,"%c[ComWrite] Warning: %u times of resume writing at No. %u, current ts = %u\n",getlocaltime(),fsignal->rscount, fsignal->loopcount, fsignal->ts_cur);
+		fprintf(stderr,"%cfsignal->ts_dif = %u,fsignal->errcount = %u,fsignal->ts_pre = %u\n",getlocaltime(),fsignal->ts_dif,fsignal->errcount,fsignal->ts_pre );
+		}
+	}
+
+
+	fsignal->ts_pre = fsignal->ts_cur; //!< store the time stamp of sucessful Read/Write cycle
+
+	
+	fsignal->errcount = 0;	//!< reset error counter
+	fsignal->toflag = 0;	//!< reset time out flag
+
+
+
+	// if(setRTS(ft,0) == 0){
+	// 	fsignal->txerrcount = 0;
+	// 	fsignal->errcount = 0;
+	// 	fsignal->loopcount++;
+	// 	return DEV_DISCON;
+	// }	//!< inactivate RTS 
+
+
+
+	//! set RTS inactive for a NANODELAY = 650ns
+	/*!
+		give enough time for DSP to read the data send out
+	*/
+	clock_gettime(CLOCK_MONOTONIC, &t_rts);	//!< get the current clock
+	t_rts.tv_nsec+=NANODELAY;	//!< add the delay to the clock variable
+
+	tsnorm(&t_rts);	//!< normalize the clock variable 
+	ByteWritten = USBWrite(ft, Txbuf, TxSize);	//!< Send out data
+
+	//if the device can't be written
+ 	if(ByteWritten == 0xffffffff){
+
+ 		fprintf(stderr,"%c[ComWrite] FTDI device disconnects at %d! txerrcount = %d.\n",getlocaltime(), fsignal->loopcount, fsignal->txerrcount);
+ 		fsignal->loopcount++;
+		fsignal->txerrcount = 0;	//!< reset error counter
+	 	return DEV_DISCON;
+	}
+
+	//! Check if continous error
+	if(fsignal->txerrcount >4 ){
+
+		fsignal->lbcount++;	//!< increase link broken counter
+		fsignal->loopcount++;
+		fprintf(stderr, "%c[ComWrite] Warning: Link broken for %d times , written continuous error = %d\n",getlocaltime(),fsignal->lbcount, fsignal->txerrcount);
+		fsignal->txerrcount = 0;
+
+		return LINE_BROKEN;
+	}
+
+
+	//! Check if time out
+	if(ByteWritten != TxSize){
+			
+		fsignal->txerrcount++;	//!< increase error counter		
+		fprintf(stderr,"%c[ComWrite] Timeout at no. %d!, txerrcount = %d.\n",getlocaltime(),fsignal->loopcount, fsignal->txerrcount);	
+		clearUSBbuf(ft,2);	//!< clear USB buffer afetr timeout 
+		reset_char_arr(Txbuf, TxSize);	//!< reset the Rx buffer
+		fsignal->loopcount++; 	//!< increase loop counter
+		return TX_SKIP;	//!< resturn Timeout msg
+	
+	}
+
+
+	clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t_rts, NULL); 	//!< sleep for 650ns
+
+
+
+	// if(setRTS(ft,1) == 0){
+
+	// 	fsignal->txerrcount = 0;  
+	// 	fsignal->errcount = 0;
+	// 	fsignal->loopcount++;
+	// 	return DEV_DISCON;
+	// } 	//!< activate RTS
+
+
+	fsignal->loopcount++;	//!< increase loop counter
+	fsignal->txerrcount = 0;  //!< reset Tx errcount if no problem in write
+
+	clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &t_loc, NULL); //sleep reminding time of 1800us
+
+
+	return TX_OK; //!< return TX ok msg
+
+}
+
+//! Close the USB port
+void ComTermination(int ft, struct CM_FLAGS *fsignal){
+
+	// setRTS(ft,0); //inactive rts
+	/* following two lines added by QLM, to prevent from close() taking to long */
+	clearUSBbuf(ft,0);
+	// fcRTSCTS(ft,0);
+	
+	closeUSBserial(ft);
+	fprintf(stderr,"%csetRTS inactive and close USB serial\n",getlocaltime());
+	fprintf(stderr,"%cLine broken = %d!\n", getlocaltime(),fsignal->lbcount);
+	fprintf(stderr,"%cResume times = %d!\n", getlocaltime(),fsignal->rscount);
+
+}
+19

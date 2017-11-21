@@ -1,0 +1,393 @@
+#include "POSIX_USBcom.h" 
+#include "timer.h"
+#include "realtime.h"
+
+int ft_status;
+
+void closeUSBserial(int ft){
+	if(close(ft) == -1) {
+		fprintf(stderr,"%cFail to close the port!\n",getlocaltime());
+		exit(1);
+	}
+}
+
+/*Clear USB buffer,clear input buffer when RoW is 1;clear output buffer when RoW is 2;clear both buffer when RoW is 0 */
+void clearUSBbuf(int ft,int RoW ){
+
+	int bytes,rem,n,ByteReceived = 0;
+	unsigned char dumpbuf[4096];
+	int retval = 0;
+
+	if(RoW != 2){
+
+		ioctl(ft,FIONREAD,&bytes); //get sum of data reminded in device buffer ,store in "bytes".
+		if(4096 - bytes > 0 ){
+
+			ByteReceived = read(ft, dumpbuf, bytes); //read out the data if there have data in buffer
+			fprintf(stderr,"%cCLEAR USB READ BUFFER\n",getlocaltime());
+		}
+	}
+
+//flush the input or output buffer
+	switch(RoW)
+	{
+	case 1 :
+		retval = tcflush(ft,TCIFLUSH);
+		if(retval < 0)
+			fprintf(stderr,"%cclear input buffer failed\n",getlocaltime());
+		break;
+	case 2 :
+		retval = tcflush(ft,TCOFLUSH);
+		if(retval < 0)
+			fprintf(stderr,"%cclear output buffer failed \n",getlocaltime());
+		break;
+	case 0 :
+		retval = tcflush(ft,TCIOFLUSH);
+		if(retval < 0)
+			fprintf(stderr,"%cclear input and output failed\n",getlocaltime());
+		break;
+	default:
+		fprintf(stderr,"%center error,nothing to clear\n",getlocaltime());
+		break;
+	}
+}
+
+
+int openUSBserial(const char *device){
+
+	int ft,fd;
+	int cn = 0;
+	static int ts = 0;
+	struct termios options;
+	int latency_target_value = 0;
+	
+	if(ts == 0){
+
+		do{
+			sleep(1);
+			ft = open(device,  O_RDWR | O_NDELAY | O_NOCTTY | O_NONBLOCK);  
+			cn++;
+
+		}while( ft == -1 && cn < 4);
+
+		if(ft == -1){
+			fprintf(stderr,"%cCan not open port %s!, please check your connection!",getlocaltime(), device);
+			system("zenity --info --text='Can not open USBserial device!please check your connection or reconnect your USB:)'"); //pop a window to tip
+			exit(1);
+		}
+	}else{
+		
+		ft = open(device,  O_RDWR | O_NDELAY | O_NOCTTY | O_NONBLOCK);
+		if(ft == -1){
+			fprintf(stderr,"%cCan not open port %s!, please check your connection!",getlocaltime(), device);
+			system("zenity --info --text='Can not open USBserial device!please check your connection or reconnect your USB:)'"); //pop a window to tip
+			exit(1);
+		}
+	}
+	// get the current settings of the serial port
+	ft_status = tcgetattr(ft, &options);
+	if (ft_status < 0){
+		fprintf(stderr,"%cError to get the config of USB device.\n",getlocaltime());
+		exit(1);
+	}
+
+	// Discard both read data not readed and write data not transmitted
+	
+
+	//memset(&options,0,sizeof(options));
+	options.c_iflag=0;
+	options.c_oflag=0;
+	options.c_cflag=0;
+	options.c_lflag=0;
+	//options.c_cflag &= ~(ICANON | ECHO | ISIG);
+	// PARENB is enable parity bit so this disables the parity bit
+	options.c_cflag &= ~PARENB;
+	// CSTOPB means 2 stop bits otherwise (in this case) only one stop bit
+	options.c_cflag &= ~CSTOPB;
+	// CSIZE is a mask for all the data size bits, so anding with the negation clears out the current data size setting
+	options.c_cflag &= ~CSIZE;
+	// CS8 means 8-bits per work
+	options.c_cflag |= CS8;
+
+	//options.c_cflag &= ~INPCK;
+
+	//options.c_lflag |= ICANON;
+	options.c_cflag |= CRTSCTS;
+	
+	options.c_cflag |= CLOCAL;
+
+	options.c_cflag |= CREAD;
+
+	options.c_iflag &= ~(IXON | IXOFF | IXANY);
+
+	options.c_iflag &= ~(INLCR|ICRNL|IGNCR);
+
+	options.c_lflag &= ~(ICANON | ECHO | ECHOE | ISIG);
+
+	//options.c_oflag &= ~(OCRNL | ONLCR | ONLRET | ONOCR |  OFILL | OLCUC | OPOST);
+
+	//options.c_oflag = 0;
+	
+
+
+	//options.c_oflag &= ~(ONLCR | OCRNL);	
+	//VMIN specifies the minimum number of N to read;VTIME is the time to wait to read the first character,if it is 0,then raed() will be permanently blocked
+	options.c_cc[VMIN] = 64;
+	options.c_cc[VTIME] = 0;
+
+
+	//Use CLOCAL when not connect to modem
+	//options.c_cflag |= (CLOCAL | CREAD);
+	//set the serial port
+	//ft_status =tcflush(ft, TCIOFLUSH);
+	//if (ft_status < 0){
+	//	printf("Error to get the config of USB device.\n");
+	//	exit(1);
+	//}
+
+	ft_status = tcsetattr(ft, TCSANOW, &options);
+	if (ft_status<0){
+   		fprintf(stderr,"%cSeting attribute of serial port fail!\n",getlocaltime());
+   		exit(1);
+	}
+
+	//fd = open("/dev/cpu_dma_latency",O_RDWR);
+	//if(fd == -1){
+	//	fprintf(stderr,"open /dev/cpu_dma_latency failed\n");
+	//	return ft;
+	//}
+	//ft_status = write(fd,&latency_target_value,4);
+	//if(ft_status == 0){
+	//	fprintf(stderr,"error setting cpu_dma_latency to 0\n");
+	//	close(fd);
+	//	return ft;
+	//}
+
+	ts++;
+	return ft;
+}
+
+
+
+//set the baud rate of input and ouput
+void setBAUDRATE(int ft, int baudrate){
+
+	if(baudrate <= 0){
+		fprintf(stderr, "%cERROR!baudrate must a positive number!!!\n",getlocaltime() );
+		exit(1);
+	}
+
+	ft_status = set_baud(ft, baudrate);
+	if (ft_status < 0 ){
+  		fprintf(stderr,"%cSet baud failed!\n",getlocaltime());
+  		exit(1);
+	}
+}
+
+
+// Enable/Disable hardware flow control,1 is enab 436.223999
+
+void fcRTSCTS(int ft, int en){
+
+	struct termios options;
+	tcgetattr(ft, &options);
+
+	if (en)
+		options.c_cflag |= CRTSCTS;
+	else
+		options.c_cflag &= ~CRTSCTS;
+
+	if(tcsetattr(ft, TCSANOW, &options)!= 0) {
+   		fprintf(stderr,"%cSeting Hardware flow control fail!\n",getlocaltime());
+   		exit(1);
+	}
+
+}
+
+//Active and inactive RTS line.If level is 1 ,active the RTS,in the other words, pull down RTS
+int setRTS(int ft, int level){
+
+	static int flags;
+	static int count = 0;
+	timespec t1,t2;
+	int try_no;
+	float ti;
+
+	//get the status of serial port throught ioctl() if first setRTS
+    if(count == 0){	
+
+		//get the status of serial port 5 times until success
+    	for(try_no = 0,ft_status = -1; ft_status < 0 && try_no < 5 ;try_no++)
+    		{
+    			ft_status = ioctl(ft,TIOCMGET,&flags);
+    		}
+		//printf error message and exit after try 5 times
+    	if(ft_status != 0){	
+    		fprintf(stderr, "%cget status of serial port failed after 5 times,please check connection !\n",getlocaltime() );
+    		exit(1);
+    	}
+		//printf counter of attempt if try more than once.
+    	if(try_no > 1)
+    		fprintf(stderr, "%cget status of serial port %d times\n",getlocaltime(),try_no );
+    }
+
+	//set the status of serial port 5 times until success
+    for(try_no = 0,ft_status =-1; ft_status < 0 && try_no < 5;try_no ++)
+    	{
+    		if (level)
+    			flags |= TIOCM_RTS;
+    		else
+    			flags &= ~TIOCM_RTS;
+			//set the status of serial port
+    		ft_status = ioctl(ft, TIOCMSET, &flags);
+    	}
+	//printf error message and exit after try 5 times
+    if(ft_status != 0){
+
+    	fprintf(stderr, "%cset status of serial port failed after 5 times,reconnect device!\n" ,getlocaltime());
+    	if(count == 0)
+    		exit(1); //exit if it is first time to setRTS
+    	count++;
+    	return 0 ;
+    }
+	//printf counter of attempt if try more than once
+    if(try_no > 1)
+    	fprintf(stderr, "%cset status of serial port %d times\n",getlocaltime(),try_no );
+
+    count++; //increase setRTS count so next time we no need to get the status of serial port
+    return 1;
+}
+
+
+int USBWrite(int ft, unsigned char *Txbuf, int TxSize){
+	
+	int ByteWritten;
+	int retval;
+	struct timespec t1,t2;
+	float td;
+	int max_fd;
+	struct timeval timeout;
+	fd_set output;
+
+	FD_ZERO(&output);
+	FD_SET(ft,&output);
+	max_fd = ft+1;  // ready for select function
+
+//	timeout.tv_sec = 1;
+//	timeout.tv_usec = 200; //write timeout ,mircosecond 
+	static int rcount=0;
+	if(rcount == 0){ //we must have a long time to read for firstly read
+		timeout.tv_sec = 10;
+		timeout.tv_usec = 0;
+	}
+	else{
+	timeout.tv_sec = 0;
+	timeout.tv_usec = 200;
+	}
+	rcount++;
+//ft_status=1;
+	t1 = tic();
+
+	ft_status = select(max_fd,NULL,&output,NULL,&timeout);
+//ft_status = select(max_fd,NULL,&output,NULL,NULL);
+
+	
+
+	//fprintf(stderr,"ft_status=%d\n",ft_status);
+	if(ft_status){ //check the writability of device in timeout 
+
+		ByteWritten = write(ft, Txbuf, TxSize);
+t2 = toc(t1,&td);
+
+
+		if (ByteWritten == -1 ){
+			fprintf(stderr, "%cerror writing :%s\n",getlocaltime(),strerror(errno) );
+			fprintf(stderr,"%cwirte time = %f\n",getlocaltime(),td);
+		}
+
+		if (ByteWritten != TxSize ){ 
+			fprintf(stderr,"%cWrite failed, Want to write %d, but only %d bytes are written.\n",getlocaltime(), TxSize, ByteWritten);
+			fprintf(stderr,"%cwirte time = %f\n",getlocaltime(),td);
+		}
+
+	}
+
+	else if(ft_status == 0){
+
+		fprintf(stderr, "%cwrite error,pass wirte\n",getlocaltime() );//device is not ready for written
+		return 0;
+	}else if(ft_status < 0){
+
+		fprintf(stderr,"%c%s\n",getlocaltime(),strerror(errno) );
+		return 0;
+	}
+		if(td > 500 ){
+
+			fprintf(stderr, "select _write time is %f\n",td );
+			//exit(1);
+		}
+
+	return ByteWritten;
+}
+ 
+
+int USBRead(int ft, unsigned char *Rxbuf, int RxSize){
+
+	static int i=0;
+	int ByteReceived = 0;
+	int retval = 0;
+	int max_fd;
+	static int rcount  = 0 ;  //static value,for locating first read
+	struct timeval timeout;
+	timespec t1,t2;
+	float td;
+	fd_set input;
+
+	FD_ZERO(&input);
+	FD_SET(ft,&input);
+	max_fd = ft+1;
+
+	if(rcount == 0){ //we must have a long time to read for firstly read
+		timeout.tv_sec = 10;
+		timeout.tv_usec = 0;
+	}
+	else{
+	timeout.tv_sec = 0;
+	timeout.tv_usec = 1800;
+	}
+
+	rcount++;
+	t1=tic();
+	ft_status = select(max_fd,&input,NULL,NULL,&timeout);
+	toc(t1,&td);
+	if(td>1800)
+	{
+		fprintf(stderr,"select r_time is %f\n",td);
+		//i++;
+		//if(i>5)
+		//	exit(1);
+	}
+	if(ft_status){//check the readability of device in timeout
+		t1=tic();
+		ByteReceived = read(ft,Rxbuf,RxSize);
+		toc(t1,&td);
+		if(td>200)
+			fprintf(stderr,"readtime is %f\n",td);
+		if(ByteReceived != RxSize){
+			fprintf(stderr,"%cTimeout in USBRead(): Data requested is %d bytes, but you get only %d bytes!\n",getlocaltime(), RxSize, ByteReceived);
+		}
+
+	}
+
+	else if(ft_status == 0){//not data available in device in timoout
+		fprintf(stderr,"%cRead timeout,pass read:%fus\n",getlocaltime(),td);
+		return 0;
+	}
+
+	else {
+		fprintf(stderr,"%c%s\n",getlocaltime(),strerror(errno) );
+		return 0;
+	}
+
+	return ByteReceived;
+}
